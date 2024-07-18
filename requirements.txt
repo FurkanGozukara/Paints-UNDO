@@ -1,4 +1,4 @@
---extra-index-url https://download.pytorch.org/whl/cu121
+--extra-index-url https://download.pytorch.org/whl/cu118
 diffusers==0.28.0
 transformers==4.41.1
 gradio==4.31.5
