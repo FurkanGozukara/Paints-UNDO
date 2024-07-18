@@ -1,4 +1,4 @@
---extra-index-url https://download.pytorch.org/whl/cu118
+--extra-index-url https://download.pytorch.org/whl/cu121
 diffusers==0.28.0
 transformers==4.41.1
 gradio==4.31.5
@@ -10,9 +10,9 @@ tensorboardX
 safetensors
 pillow
 einops
-torch
+torch==2.3.0+cu121
+torchvision==0.18.0+cu121
 peft
 xformers
 onnxruntime
 av
-torchvision
