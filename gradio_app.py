@@ -312,7 +312,7 @@ def auto_set_dimensions(image, lowvram):
     return gr.update(value=new_width), gr.update(value=new_height)
 
 @torch.inference_mode()
-def process_video(keyframes, prompt, steps, cfg, fps, seed,input_fg_path, progress=gr.Progress()):
+def process_video(keyframes, prompt, steps, cfg, fps, seed, input_fg_path, progress=gr.Progress()):
     result_frames = []
     cropped_images = []
 
@@ -329,18 +329,26 @@ def process_video(keyframes, prompt, steps, cfg, fps, seed,input_fg_path, progre
     video = torch.cat(result_frames, dim=2)
     video = torch.flip(video, dims=[2])
 
-    uuid_name = str(uuid.uuid4())
-    output_filename = os.path.join(result_dir, uuid_name + '.mp4')
-    Image.fromarray(cropped_images[0][0]).save(os.path.join(result_dir, uuid_name + '.png'))
+    input_name = os.path.splitext(os.path.basename(input_fg_path))[0]
+    output_filename = generate_unique_filename(os.path.join(result_dir, f"{input_name}_0001.mp4"))
+    Image.fromarray(cropped_images[0][0]).save(os.path.join(result_dir, f"{input_name}_0001.png"))
     video = save_bcthw_as_mp4(video, output_filename, fps=fps)
     video = [x.cpu().numpy() for x in video]
 
-    input_name = os.path.splitext(os.path.basename(input_fg_path))[0]
     video_frames_folder = create_incremental_folder(os.path.join(result_dir, 'video_frames'), f"{input_name}_final_frames")
     for i, frame in enumerate(video):
         Image.fromarray(frame).save(os.path.join(video_frames_folder, f"frame_{i:04d}.png"))
 
     return output_filename, video
+
+def generate_unique_filename(base_filename):
+    counter = 1
+    while os.path.exists(base_filename):
+        name, ext = os.path.splitext(base_filename)
+        base_name = name.rsplit('_', 1)[0]
+        base_filename = f"{base_name}_{counter:04d}{ext}"
+        counter += 1
+    return base_filename
 
 def create_ui():
     block = gr.Blocks().queue()
