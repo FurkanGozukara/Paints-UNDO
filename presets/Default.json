@@ -1,0 +1,1 @@
+{"input_undo_steps": [400, 600, 800, 900, 950, 999], "seed": 12345, "image_width": 512, "image_height": 512, "steps": 50, "cfg": 3, "n_prompt": "lowres, bad anatomy, bad hands, cropped, worst quality", "auto_set_dimensions": true, "lowvram": true, "i2v_input_text": "masterpiece, best quality", "i2v_seed": 123, "i2v_cfg_scale": 7.5, "i2v_steps": 50, "i2v_fps": 4}
