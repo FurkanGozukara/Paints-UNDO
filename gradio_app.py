@@ -101,7 +101,7 @@ def save_preset(preset_name, settings):
     return gr.update(choices=get_preset_list(), value=preset_name)
 
 def save_preset_wrapper(preset_name, input_undo_steps, seed, image_width, image_height, steps, cfg, n_prompt,
-                        auto_set_dimensions, lowvram, i2v_input_text, i2v_seed, i2v_cfg_scale, i2v_steps, i2v_fps):
+                        auto_set_dimensions, lowvram, i2v_input_text, i2v_seed, i2v_cfg_scale, i2v_steps, i2v_fps, use_random_seed):
     settings = {
         'input_undo_steps': input_undo_steps,
         'seed': seed,
@@ -116,7 +116,8 @@ def save_preset_wrapper(preset_name, input_undo_steps, seed, image_width, image_
         'i2v_seed': i2v_seed,
         'i2v_cfg_scale': i2v_cfg_scale,
         'i2v_steps': i2v_steps,
-        'i2v_fps': i2v_fps
+        'i2v_fps': i2v_fps,
+        'use_random_seed': use_random_seed
     }
     return save_preset(preset_name, settings)
 
@@ -130,10 +131,10 @@ def load_preset(preset_name):
         return [settings.get(key, None) for key in [
             'input_undo_steps', 'seed', 'image_width', 'image_height', 'steps', 'cfg', 'n_prompt',
             'auto_set_dimensions', 'lowvram',
-            'i2v_input_text', 'i2v_seed', 'i2v_cfg_scale', 'i2v_steps', 'i2v_fps'
+            'i2v_input_text', 'i2v_seed', 'i2v_cfg_scale', 'i2v_steps', 'i2v_fps', 'use_random_seed'
         ]]
     except:
-        return [None] * 15
+        return [None] * 16
 
 def get_preset_list():
     presets_dir = os.path.join(os.path.dirname(__file__), 'presets')
@@ -189,7 +190,9 @@ def interrogator_process(x):
 
 @torch.inference_mode()
 def process(input_fg_path, prompt, input_undo_steps, image_width, image_height, seed, steps, n_prompt, cfg,
-            progress=gr.Progress()):
+            use_random_seed, progress=gr.Progress()):
+    if use_random_seed:
+        seed = random.randint(0, 1000000)
     rng = torch.Generator(device=memory_management.gpu).manual_seed(int(seed))
     input_fg = np.array(Image.open(input_fg_path))
     memory_management.load_models_to_gpu(vae)
@@ -233,7 +236,7 @@ def process(input_fg_path, prompt, input_undo_steps, image_width, image_height, 
         Image.fromarray(frame).save(file_path)
         result.append(file_path)  # Only append the file path
 
-    return result, frames_folder
+    return result, frames_folder, seed
 
 @torch.inference_mode()
 def process_video_inner(image_1, image_2, prompt, seed=123, steps=25, cfg_scale=7.5, fs=3, progress_tqdm=None):
@@ -312,13 +315,15 @@ def auto_set_dimensions(image, lowvram):
     return gr.update(value=new_width), gr.update(value=new_height)
 
 @torch.inference_mode()
-def process_video(keyframes, prompt, steps, cfg, fps, seed, input_fg_path, progress=gr.Progress()):
+def process_video(keyframes, prompt, steps, cfg, fps, seed, input_fg_path, use_random_seed, progress=gr.Progress()):
     result_frames = []
     cropped_images = []
 
     for i, (im1, im2) in enumerate(zip(keyframes[:-1], keyframes[1:])):
         im1 = np.array(Image.open(im1[0]))
         im2 = np.array(Image.open(im2[0]))
+        if use_random_seed:
+            seed = random.randint(0, 1000000)
         frames, im1, im2 = process_video_inner(
             im1, im2, prompt, seed=seed + i, steps=steps, cfg_scale=cfg, fs=3,
             progress_tqdm=functools.partial(progress.tqdm, desc=f'Generating Videos ({i + 1}/{len(keyframes) - 1})')
@@ -353,7 +358,7 @@ def generate_unique_filename(base_filename):
 def create_ui():
     block = gr.Blocks().queue()
     with block:
-        gr.Markdown('# Paints-Undo Upgraded - V1 - Source : https://www.patreon.com/posts/108403107')
+        gr.Markdown('# Paints-Undo Upgraded - V3 - Source : https://www.patreon.com/posts/121228327')
 
         with gr.Accordion(label='Step 1: Upload Image and Generate Prompt', open=True):
             with gr.Row():
@@ -375,6 +380,7 @@ def create_ui():
             with gr.Row():
                 auto_set_dimensions_checkbox = gr.Checkbox(label="Auto Set Dimensions", value=True)
                 lowvram_checkbox = gr.Checkbox(label="Low VRAM Mode", value=True)
+                use_random_seed_checkbox = gr.Checkbox(label="Use Random Seed", value=True)
             with gr.Row():
                 with gr.Column():
                     input_undo_steps = gr.Dropdown(label="Operation Steps", value=[400, 600, 800, 900, 950, 999],
@@ -443,21 +449,22 @@ def create_ui():
 
         key_gen_button.click(
             fn=process,
-            inputs=[input_fg, prompt, input_undo_steps, image_width, image_height, seed, steps, n_prompt, cfg],
-            outputs=[result_gallery, gr.State()]
+            inputs=[input_fg, prompt, input_undo_steps, image_width, image_height, seed, steps, n_prompt, cfg, use_random_seed_checkbox],
+            outputs=[result_gallery, gr.State(), seed]
         ).then(
-            lambda result, frames_folder: [
+            lambda result, frames_folder, used_seed: [
                 gr.update(value=result, label=f"Outputs (saved in {frames_folder})"),
                 gr.update(interactive=True),
                 gr.update(interactive=True),
-                gr.update(interactive=True)
+                gr.update(interactive=True),
+                gr.update(value=used_seed)
             ],
-            inputs=[result_gallery, gr.State()],
-            outputs=[result_gallery, prompt_gen_button, key_gen_button, i2v_end_btn]
+            inputs=[result_gallery, gr.State(), seed],
+            outputs=[result_gallery, prompt_gen_button, key_gen_button, i2v_end_btn, seed]
         )
 
         i2v_end_btn.click(
-            inputs=[result_gallery, i2v_input_text, i2v_steps, i2v_cfg_scale, i2v_fps, i2v_seed,input_fg],
+            inputs=[result_gallery, i2v_input_text, i2v_steps, i2v_cfg_scale, i2v_fps, i2v_seed, input_fg, use_random_seed_checkbox],
             outputs=[i2v_output_video, i2v_output_images],
             fn=process_video
         )
@@ -476,7 +483,7 @@ def create_ui():
                 preset_name, 
                 input_undo_steps, seed, image_width, image_height, steps, cfg, n_prompt,
                 auto_set_dimensions_checkbox, lowvram_checkbox,
-                i2v_input_text, i2v_seed, i2v_cfg_scale, i2v_steps, i2v_fps
+                i2v_input_text, i2v_seed, i2v_cfg_scale, i2v_steps, i2v_fps, use_random_seed_checkbox
             ],
             outputs=[load_preset_dropdown]
         )
@@ -487,7 +494,7 @@ def create_ui():
             outputs=[
                 input_undo_steps, seed, image_width, image_height, steps, cfg, n_prompt,
                 auto_set_dimensions_checkbox, lowvram_checkbox,
-                i2v_input_text, i2v_seed, i2v_cfg_scale, i2v_steps, i2v_fps
+                i2v_input_text, i2v_seed, i2v_cfg_scale, i2v_steps, i2v_fps, use_random_seed_checkbox
             ]
         )
 
@@ -506,7 +513,7 @@ def create_ui():
                     load_preset_dropdown,  # Update the dropdown selection
                     input_undo_steps, seed, image_width, image_height, steps, cfg, n_prompt,
                     auto_set_dimensions_checkbox, lowvram_checkbox,
-                    i2v_input_text, i2v_seed, i2v_cfg_scale, i2v_steps, i2v_fps
+                    i2v_input_text, i2v_seed, i2v_cfg_scale, i2v_steps, i2v_fps, use_random_seed_checkbox
                 ]
             )
 
