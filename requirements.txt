@@ -13,3 +13,4 @@ peft
 onnxruntime
 onnxruntime-gpu
 av
+pydantic==2.10.6
