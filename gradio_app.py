@@ -358,7 +358,7 @@ def generate_unique_filename(base_filename):
 def create_ui():
     block = gr.Blocks().queue()
     with block:
-        gr.Markdown('# Paints-Undo Upgraded - V3 - Source : https://www.patreon.com/posts/121228327')
+        gr.Markdown('# Paints-Undo Upgraded - V5 - Source : https://www.patreon.com/posts/121228327')
 
         with gr.Accordion(label='Step 1: Upload Image and Generate Prompt', open=True):
             with gr.Row():
