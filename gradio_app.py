@@ -357,6 +357,7 @@ def generate_unique_filename(base_filename):
 
 def create_ui():
     block = gr.Blocks().queue()
+    preset_choices = get_preset_list()
     with block:
         gr.Markdown('# Paints-Undo Upgraded - V5 - Source : https://www.patreon.com/posts/121228327')
 
@@ -372,7 +373,12 @@ def create_ui():
             with gr.Row():
                 preset_name = gr.Textbox(label="Preset Name")
                 save_preset_btn = gr.Button("Save Preset")
-                load_preset_dropdown = gr.Dropdown(label="Load Preset", choices=get_preset_list())
+                load_preset_dropdown = gr.Dropdown(
+                    label="Load Preset",
+                    choices=preset_choices,
+                    value=preset_choices[0] if preset_choices else None,
+                    allow_custom_value=True,
+                )
                 load_preset_btn = gr.Button("Load Preset")
                 refresh_preset_btn = gr.Button("Refresh Presets")
 
@@ -410,8 +416,13 @@ def create_ui():
                 with gr.Column():
                     open_results_btn = gr.Button("Open Results Folder")
                     i2v_end_btn = gr.Button("Generate Video", interactive=False)
-                    i2v_output_video = gr.Video(label="Generated Video", elem_id="output_vid", autoplay=True,
-                                                show_share_button=True, height=512)
+                    i2v_output_video = gr.Video(
+                        label="Generated Video",
+                        elem_id="output_vid",
+                        autoplay=True,
+                        buttons=["share"],
+                        height=512,
+                    )
             with gr.Row():
                 i2v_output_images = gr.Gallery(height=512, label="Output Frames", object_fit="contain", columns=8)
 
@@ -505,10 +516,14 @@ def create_ui():
 
         # Load last preset on startup
         last_preset = get_last_preset()
-        if last_preset:
+        if last_preset and last_preset in preset_choices:
             block.load(
                 fn=lambda x: (x, *load_preset(x)), 
-                inputs=[gr.Dropdown(value=last_preset)],
+                inputs=[gr.Dropdown(
+                    value=last_preset,
+                    choices=preset_choices,
+                    allow_custom_value=True,
+                )],
                 outputs=[
                     load_preset_dropdown,  # Update the dropdown selection
                     input_undo_steps, seed, image_width, image_height, steps, cfg, n_prompt,
