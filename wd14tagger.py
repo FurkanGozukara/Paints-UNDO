@@ -43,9 +43,14 @@ def default_interrogator(image, threshold=0.35, character_threshold=0.85, exclud
     if global_model is not None:
         model = global_model
     else:
-        # assert 'CUDAExecutionProvider' in ort.get_available_providers(), 'CUDA Install Failed!'
-        # model = InferenceSession(model_onnx_filename, providers=['CUDAExecutionProvider'])
-        model = InferenceSession(model_onnx_filename, providers=['CPUExecutionProvider'])
+        # Try to use CUDA if available, fall back to CPU
+        available_providers = ort.get_available_providers()
+        if 'CUDAExecutionProvider' in available_providers:
+            model = InferenceSession(model_onnx_filename, providers=['CUDAExecutionProvider'])
+            print('WD14 Tagger using GPU (CUDA)')
+        else:
+            model = InferenceSession(model_onnx_filename, providers=['CPUExecutionProvider'])
+            print('WD14 Tagger using CPU (CUDA not available)')
         global_model = model
 
     input = model.get_inputs()[0]

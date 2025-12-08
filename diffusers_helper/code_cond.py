@@ -21,13 +21,31 @@ def unet_add_coded_conds(unet, added_number_count=1):
     unet_original_forward = unet.forward
 
     def hooked_unet_forward(sample, timestep, encoder_hidden_states, **kwargs):
+        import time
+        
+        prep_start = time.time()
         cross_attention_kwargs = {k: v for k, v in kwargs['cross_attention_kwargs'].items()}
         coded_conds = cross_attention_kwargs.pop('coded_conds')
         kwargs['cross_attention_kwargs'] = cross_attention_kwargs
 
-        coded_conds = torch.cat([coded_conds] * (sample.shape[0] // coded_conds.shape[0]), dim=0).to(sample.device)
+        repeat_count = sample.shape[0] // coded_conds.shape[0]
+        coded_conds = torch.cat([coded_conds] * repeat_count, dim=0).to(sample.device)
         kwargs['added_cond_kwargs'] = dict(coded_conds=coded_conds)
-        return unet_original_forward(sample, timestep, encoder_hidden_states, **kwargs)
+        prep_time = (time.time() - prep_start) * 1000
+        
+        if not hasattr(hooked_unet_forward, '_first_call'):
+            print(f"[TRACE] code_cond hook: repeat={repeat_count}, prep took {prep_time:.1f}ms")
+            hooked_unet_forward._first_call = True
+        
+        forward_start = time.time()
+        result = unet_original_forward(sample, timestep, encoder_hidden_states, **kwargs)
+        forward_time = (time.time() - forward_start) * 1000
+        
+        if not hasattr(hooked_unet_forward, '_forward_logged'):
+            print(f"[TRACE] code_cond hook: calling cat_cond forward (which calls original UNet)...")
+            hooked_unet_forward._forward_logged = True
+            
+        return result
 
     unet.forward = hooked_unet_forward
 

@@ -26,6 +26,14 @@ os.environ['HF_HOME'] = os.path.join(os.path.dirname(__file__), 'hf_download')
 result_dir = os.path.join('./', 'results')
 os.makedirs(result_dir, exist_ok=True)
 
+# Enable TF32 for better performance on Ampere/Ada/Hopper GPUs (RTX 30xx/40xx/50xx)
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True  # Auto-tune kernels for better performance
+    print(f"[GPU Optimization] TF32 enabled for faster matrix operations")
+    print(f"[GPU Optimization] cuDNN benchmark enabled for optimized kernels")
+
 class ModifiedUNet(UNet2DConditionModel):
     @classmethod
     def from_config(cls, *args, **kwargs):
@@ -36,6 +44,9 @@ class ModifiedUNet(UNet2DConditionModel):
 
 model_name = 'lllyasviel/paints_undo_single_frame'
 tokenizer = CLIPTokenizer.from_pretrained(model_name, subfolder="tokenizer")
+
+# Load models - they'll be moved to GPU based on VRAM mode
+print("Loading weights from local directory")
 text_encoder = CLIPTextModel.from_pretrained(model_name, subfolder="text_encoder").to(torch.float16)
 vae = AutoencoderKL.from_pretrained(model_name, subfolder="vae").to(torch.bfloat16)
 unet = ModifiedUNet.from_pretrained(model_name, subfolder="unet").to(torch.float16)
@@ -43,15 +54,49 @@ unet = ModifiedUNet.from_pretrained(model_name, subfolder="unet").to(torch.float
 unet.set_attn_processor(AttnProcessor2_0())
 vae.set_attn_processor(AttnProcessor2_0())
 
+# Ensure models are in eval mode and gradients are disabled
+unet.eval()
+vae.eval()
+text_encoder.eval()
+
+# Disable gradient checkpointing if enabled (it slows down inference)
+if hasattr(unet, 'enable_gradient_checkpointing'):
+    try:
+        unet.disable_gradient_checkpointing()
+        print("[DEBUG] Gradient checkpointing disabled on UNet for faster inference")
+    except:
+        pass
+
+# Ensure no compilation is happening
+print(f"[DEBUG] UNet type: {type(unet)}")
+print(f"[DEBUG] UNet forward type: {type(unet.forward)}")
+
+# Check for any debugging/profiling hooks that might slow things down
+if hasattr(torch, 'autograd') and hasattr(torch.autograd, 'set_detect_anomaly'):
+    torch.autograd.set_detect_anomaly(False)
+    print("[DEBUG] Autograd anomaly detection disabled")
+
+# Disable PyTorch profiler if it was enabled
+if hasattr(torch, 'profiler'):
+    torch.autograd.profiler.profile.__exit__ = lambda *args: None
+    torch.autograd.profiler.emit_nvtx.__exit__ = lambda *args: None
+
+print("Loading weights from local directory")
 video_pipe = LatentVideoDiffusionPipeline.from_pretrained(
     'lllyasviel/paints_undo_multi_frame',
     fp16=True
 )
 
-memory_management.unload_all_models([
-    video_pipe.unet, video_pipe.vae, video_pipe.text_encoder, video_pipe.image_projection, video_pipe.image_encoder,
+# Register all models with memory management system
+# They start on CPU, will be moved to GPU on first use
+all_models = [
+    video_pipe.unet, video_pipe.vae, video_pipe.text_encoder, 
+    video_pipe.image_projection, video_pipe.image_encoder,
     unet, vae, text_encoder
-])
+]
+
+# Initialize models on CPU to save memory at startup
+memory_management.unload_all_models(all_models)
 
 k_sampler = KDiffusionSampler(
     unet=unet,
@@ -60,6 +105,30 @@ k_sampler = KDiffusionSampler(
     linear_end=0.020,
     linear=True
 )
+
+# Warmup function to compile CUDA kernels
+def warmup_models():
+    print("[DEBUG] Warming up models (compiling CUDA kernels)...")
+    try:
+        with torch.inference_mode():
+            # Warmup UNet
+            dummy_latent = torch.randn(1, 8, 64, 64, device='cuda', dtype=torch.float16)
+            dummy_t = torch.tensor([999], device='cuda')
+            dummy_encoder = torch.randn(1, 77, 768, device='cuda', dtype=torch.float16)
+            dummy_concat = torch.randn(1, 4, 64, 64, device='cuda', dtype=torch.float16)
+            dummy_coded = torch.tensor([500], device='cuda', dtype=torch.long)
+            
+            _ = unet(
+                dummy_latent,
+                dummy_t,
+                encoder_hidden_states=dummy_encoder,
+                cross_attention_kwargs={'concat_conds': dummy_concat, 'coded_conds': dummy_coded},
+                return_dict=False
+            )
+            torch.cuda.synchronize()
+            print("[DEBUG] Warmup complete - CUDA kernels compiled")
+    except Exception as e:
+        print(f"[WARNING] Warmup failed (this is OK): {e}")
 
 def create_incremental_folder(base_path, base_name):
     counter = 1
@@ -185,29 +254,81 @@ def resize_without_crop(image, target_width, target_height):
 
 @torch.inference_mode()
 def interrogator_process(x):
+    print(f"\n[DEBUG] Starting WD14 Tagger interrogation")
+    print(f"[DEBUG] CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"[DEBUG] Current CUDA device: {torch.cuda.current_device()}")
+        print(f"[DEBUG] GPU name: {torch.cuda.get_device_name(0)}")
     image = np.array(Image.open(x))
     return wd14tagger.default_interrogator(image)
 
 @torch.inference_mode()
 def process(input_fg_path, prompt, input_undo_steps, image_width, image_height, seed, steps, n_prompt, cfg,
-            use_random_seed, progress=gr.Progress()):
+            use_random_seed, lowvram, progress=gr.Progress()):
+    import time
+    process_start = time.time()
+    
+    print(f"[TRACE] Process function started")
+    
+    # Set memory management mode based on UI checkbox
+    # lowvram=True means Low VRAM Mode is enabled, so high_vram should be False
+    print(f"[TRACE] Setting memory management mode...")
+    memory_management.set_high_vram_mode(not lowvram)
+    
+    print(f"\n{'='*60}")
+    print(f"[DEBUG] Starting key frame generation")
+    print(f"[DEBUG] Settings: {image_width}x{image_height}, {steps} steps, CFG={cfg}")
+    print(f"[DEBUG] Undo steps: {input_undo_steps} (batch size: {len(input_undo_steps)})")
+    print(f"[DEBUG] Low VRAM Mode: {'ON' if lowvram else 'OFF'}")
+    print(f"{'='*60}\n")
+    
     if use_random_seed:
         seed = random.randint(0, 1000000)
-    rng = torch.Generator(device=memory_management.gpu).manual_seed(int(seed))
+    
+    # Create generator on CPU first to avoid device mismatch issues
+    # It will be moved to correct device when needed in k_sampler
+    print(f"[TRACE] Creating RNG generator...")
+    rng = torch.Generator(device='cpu').manual_seed(int(seed))
+    
+    print(f"[TRACE] Loading input image...")
     input_fg = np.array(Image.open(input_fg_path))
+    
+    # VAE Encoding
+    print(f"[TRACE] Starting VAE encoding...")
+    vae_start = time.time()
     memory_management.load_models_to_gpu(vae)
     fg = resize_and_center_crop(input_fg, image_width, image_height)
     concat_conds = numpy2pytorch([fg]).to(device=vae.device, dtype=vae.dtype)
+    print(f"[TRACE] VAE encode call...")
     concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
+    print(f"[DEBUG] VAE encoding took {time.time() - vae_start:.3f}s")
+    print(f"[DEBUG] VAE device: {vae.device}, Latent shape: {concat_conds.shape}")
 
+    # Text Encoding
+    print(f"[TRACE] Starting text encoding...")
+    text_start = time.time()
     memory_management.load_models_to_gpu(text_encoder)
+    print(f"[TRACE] Encoding positive prompt...")
     conds = encode_cropped_prompt_77tokens(prompt)
+    print(f"[TRACE] Encoding negative prompt...")
     unconds = encode_cropped_prompt_77tokens(n_prompt)
+    print(f"[DEBUG] Text encoding took {time.time() - text_start:.3f}s")
+    print(f"[DEBUG] Text encoder device: {text_encoder.device}")
 
+    # UNet Sampling
+    print(f"[TRACE] Starting UNet sampling phase...")
+    sampling_start = time.time()
     memory_management.load_models_to_gpu(unet)
+    print(f"[DEBUG] UNet loaded to device: {unet.device}")
+    print(f"[DEBUG] UNet dtype: {unet.dtype}")
+    
+    print(f"[TRACE] Preparing sampling inputs...")
     fs = torch.tensor(input_undo_steps).to(device=unet.device, dtype=torch.long)
     initial_latents = torch.zeros_like(concat_conds)
     concat_conds = concat_conds.to(device=unet.device, dtype=unet.dtype)
+    
+    print(f"[DEBUG] Starting k_sampler with batch_size={len(input_undo_steps)}, steps={steps}")
+    print(f"[TRACE] Calling k_sampler...")
     latents = k_sampler(
         initial_latent=initial_latents,
         strength=1.0,
@@ -221,12 +342,20 @@ def process(input_fg_path, prompt, input_undo_steps, image_width, image_height, 
         same_noise_in_batch=True,
         progress_tqdm=functools.partial(progress.tqdm, desc='Generating Key Frames')
     ).to(vae.dtype) / vae.config.scaling_factor
+    print(f"[DEBUG] Sampling took {time.time() - sampling_start:.3f}s")
 
+    # VAE Decoding
+    print(f"[TRACE] Starting VAE decoding...")
+    decode_start = time.time()
     memory_management.load_models_to_gpu(vae)
+    print(f"[TRACE] VAE decode call...")
     pixels = vae.decode(latents).sample
     pixels = pytorch2numpy(pixels)
     pixels = [fg] + pixels + [np.zeros_like(fg) + 255]
+    print(f"[DEBUG] VAE decoding took {time.time() - decode_start:.3f}s")
+    print(f"[DEBUG] Total process time: {time.time() - process_start:.3f}s\n")
 
+    print(f"[TRACE] Saving output frames...")
     input_name = os.path.splitext(os.path.basename(input_fg_path))[0]
     frames_folder = create_incremental_folder(os.path.join(result_dir, 'frames'), f"{input_name}_key_frames")
     
@@ -236,6 +365,7 @@ def process(input_fg_path, prompt, input_undo_steps, image_width, image_height, 
         Image.fromarray(frame).save(file_path)
         result.append(file_path)  # Only append the file path
 
+    print(f"[TRACE] Process function completed successfully")
     return result, frames_folder, seed
 
 @torch.inference_mode()
@@ -315,7 +445,10 @@ def auto_set_dimensions(image, lowvram):
     return gr.update(value=new_width), gr.update(value=new_height)
 
 @torch.inference_mode()
-def process_video(keyframes, prompt, steps, cfg, fps, seed, input_fg_path, use_random_seed, progress=gr.Progress()):
+def process_video(keyframes, prompt, steps, cfg, fps, seed, input_fg_path, use_random_seed, lowvram, progress=gr.Progress()):
+    # Set memory management mode for video generation
+    memory_management.set_high_vram_mode(not lowvram)
+    
     result_frames = []
     cropped_images = []
 
@@ -356,10 +489,11 @@ def generate_unique_filename(base_filename):
     return base_filename
 
 def create_ui():
-    block = gr.Blocks().queue()
+    # Disable queue - it can interfere with GPU operations
+    block = gr.Blocks()
     preset_choices = get_preset_list()
     with block:
-        gr.Markdown('# Paints-Undo Upgraded - V5 - Source : https://www.patreon.com/posts/121228327')
+        gr.Markdown('# Paints-Undo Upgraded - V6 - Source : https://www.patreon.com/posts/121228327')
 
         with gr.Accordion(label='Step 1: Upload Image and Generate Prompt', open=True):
             with gr.Row():
@@ -385,7 +519,11 @@ def create_ui():
         with gr.Accordion(label='Step 2: Generate Key Frames', open=True):
             with gr.Row():
                 auto_set_dimensions_checkbox = gr.Checkbox(label="Auto Set Dimensions", value=True)
-                lowvram_checkbox = gr.Checkbox(label="Low VRAM Mode", value=True)
+                lowvram_checkbox = gr.Checkbox(
+                    label="Low VRAM Mode", 
+                    value=False,  # Default to OFF for high-end GPUs (RTX 3090/4090/5090)
+                    info="Enable for GPUs with <12GB VRAM. Disable for RTX 3090/4090/5090 for max speed."
+                )
                 use_random_seed_checkbox = gr.Checkbox(label="Use Random Seed", value=True)
             with gr.Row():
                 with gr.Column():
@@ -420,7 +558,6 @@ def create_ui():
                         label="Generated Video",
                         elem_id="output_vid",
                         autoplay=True,
-                        buttons=["share"],
                         height=512,
                     )
             with gr.Row():
@@ -460,7 +597,7 @@ def create_ui():
 
         key_gen_button.click(
             fn=process,
-            inputs=[input_fg, prompt, input_undo_steps, image_width, image_height, seed, steps, n_prompt, cfg, use_random_seed_checkbox],
+            inputs=[input_fg, prompt, input_undo_steps, image_width, image_height, seed, steps, n_prompt, cfg, use_random_seed_checkbox, lowvram_checkbox],
             outputs=[result_gallery, gr.State(), seed]
         ).then(
             lambda result, frames_folder, used_seed: [
@@ -475,7 +612,7 @@ def create_ui():
         )
 
         i2v_end_btn.click(
-            inputs=[result_gallery, i2v_input_text, i2v_steps, i2v_cfg_scale, i2v_fps, i2v_seed, input_fg, use_random_seed_checkbox],
+            inputs=[result_gallery, i2v_input_text, i2v_steps, i2v_cfg_scale, i2v_fps, i2v_seed, input_fg, use_random_seed_checkbox, lowvram_checkbox],
             outputs=[i2v_output_video, i2v_output_images],
             fn=process_video
         )
@@ -537,7 +674,12 @@ def create_ui():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Paints-Undo Gradio App")
     parser.add_argument("--share", action="store_true", help="Enable Gradio share feature")
+    parser.add_argument("--no-warmup", action="store_true", help="Skip model warmup")
     args = parser.parse_args()
+
+    # Warmup models before UI launch
+    if not args.no_warmup:
+        warmup_models()
 
     demo = create_ui()
     demo.launch(share=args.share, inbrowser=True)
