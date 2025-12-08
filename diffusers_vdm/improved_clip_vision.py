@@ -35,7 +35,8 @@ def arbitrary_positional_encoding(p, H, W):
     return weight
 
 
-def improved_clipvision_embedding_forward(self, pixel_values):
+def improved_clipvision_embedding_forward(self, pixel_values, interpolate_pos_encoding=None, **kwargs):
+    # Accept and ignore interpolate_pos_encoding and any other kwargs from newer transformers versions
     pixel_values = pixel_values * 0.5 + 0.5
     pixel_values = preprocess(pixel_values)
     batch_size = pixel_values.shape[0]
