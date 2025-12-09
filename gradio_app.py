@@ -493,7 +493,7 @@ def create_ui():
     block = gr.Blocks()
     preset_choices = get_preset_list()
     with block:
-        gr.Markdown('# Paints-Undo Upgraded - V6 - Source : https://www.patreon.com/posts/121228327')
+        gr.Markdown('# Paints-Undo Upgraded - V7 - Source : https://www.patreon.com/posts/121228327')
 
         with gr.Accordion(label='Step 1: Upload Image and Generate Prompt', open=True):
             with gr.Row():
