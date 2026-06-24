@@ -144,8 +144,8 @@ class SamplerDynamicTSNR(torch.nn.Module):
             else:
                 e_t = model_output
 
-            a_prev = alphas_prev[index].item() * s_x
-            sigma_t = sigmas[index].item() * s_x
+            a_prev = alphas_prev[index].to(device=x.device, dtype=torch.float32) * s_x.float()
+            sigma_t = torch.as_tensor(sigmas[index].item(), device=x.device, dtype=torch.float32) * s_x.float()
 
             if self.is_v:
                 pred_x0 = self.predict_start_from_z_and_v(x, t, model_output)
@@ -155,14 +155,14 @@ class SamplerDynamicTSNR(torch.nn.Module):
                 pred_x0 = (x - sqrt_one_minus_at * e_t) / a_t.sqrt()
 
             # dynamic rescale
-            scale_t = scale_arr[index].item() * s_x
-            prev_scale_t = scale_arr_prev[index].item() * s_x
+            scale_t = scale_arr[index].to(device=x.device, dtype=torch.float32) * s_x.float()
+            prev_scale_t = scale_arr_prev[index].to(device=x.device, dtype=torch.float32) * s_x.float()
             rescale = (prev_scale_t / scale_t)
             pred_x0 = pred_x0 * rescale
 
-            dir_xt = (1. - a_prev - sigma_t ** 2).sqrt() * e_t
-            noise = sigma_t * torch.randn_like(x)
-            x = a_prev.sqrt() * pred_x0 + dir_xt + noise
+            dir_xt = (1. - a_prev - sigma_t ** 2).clamp_min(0.).sqrt() * e_t.float()
+            noise = sigma_t * torch.randn_like(x, dtype=torch.float32)
+            x = (a_prev.sqrt() * pred_x0.float() + dir_xt + noise).to(self.unet.dtype)
 
         return x
 

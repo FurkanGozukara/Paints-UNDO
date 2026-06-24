@@ -1,11 +1,11 @@
 import torch
-import xformers.ops
 import torch.nn.functional as F
 
 from torch import nn
 from einops import rearrange, repeat
 from functools import partial
 from diffusers_vdm.basics import zero_module, checkpoint, default, make_temporal_window
+from diffusers_vdm.xformers_attention import memory_efficient_attention
 
 
 def sdp(q, k, v, heads):
@@ -21,10 +21,14 @@ def sdp(q, k, v, heads):
         (q, k, v),
     )
 
-    try:
-        out = xformers.ops.memory_efficient_attention(q, k, v)
-    except NotImplementedError:
-        out = F.scaled_dot_product_attention(q, k, v, attn_mask=None)
+    out = memory_efficient_attention(
+        q,
+        k,
+        v,
+        env_name="PAINTS_UNDO_UNET_XFORMERS_OP",
+        default_op="triton_splitk",
+        label="video-unet",
+    )
 
     out = (
         out.unsqueeze(0)

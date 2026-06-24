@@ -3,31 +3,25 @@
 
 
 import torch
-import xformers.ops
 import torch.nn as nn
-import torch.nn.functional as F
 
 from einops import rearrange, repeat
 from diffusers_vdm.basics import default, exists, zero_module, conv_nd, linear, normalization
 from diffusers_vdm.unet import Upsample, Downsample
+from diffusers_vdm.xformers_attention import memory_efficient_attention
 from huggingface_hub import PyTorchModelHubMixin
 
 
 def chunked_attention(q, k, v, batch_chunk=0):
-    try:
-        return xformers.ops.memory_efficient_attention(q, k, v)
-    except NotImplementedError:
-        pass
-
-    if batch_chunk > 0 and not torch.is_grad_enabled():
-        chunks = [slice(i, i + batch_chunk) for i in range(0, q.size(0), batch_chunk)]
-        out_chunks = [
-            F.scaled_dot_product_attention(q[chunk], k[chunk], v[chunk], attn_mask=None)
-            for chunk in chunks
-        ]
-        return torch.cat(out_chunks, dim=0)
-
-    return F.scaled_dot_product_attention(q, k, v, attn_mask=None)
+    return memory_efficient_attention(
+        q,
+        k,
+        v,
+        env_name="PAINTS_UNDO_VAE_XFORMERS_OP",
+        default_op="auto",
+        batch_chunk=batch_chunk,
+        label="video-vae",
+    )
 
 
 def nonlinearity(x):
