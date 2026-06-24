@@ -6,7 +6,7 @@
 
 ### Supports low VRAM and tiled VAE thus you can use this even on Low VRAM GPUs
 
-### Automatically sorts entered keyframes
+### Automatically sorts entered Operation Steps - keyframes
 
 <img width="2000" height="1187" alt="image" src="https://github.com/user-attachments/assets/415c1846-3859-4991-b670-c7efe1bd3eee" />
 
