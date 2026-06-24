@@ -21,7 +21,10 @@ def sdp(q, k, v, heads):
         (q, k, v),
     )
 
-    out = xformers.ops.memory_efficient_attention(q, k, v)
+    try:
+        out = xformers.ops.memory_efficient_attention(q, k, v)
+    except NotImplementedError:
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=None)
 
     out = (
         out.unsqueeze(0)
