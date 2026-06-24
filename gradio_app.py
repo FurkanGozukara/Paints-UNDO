@@ -662,6 +662,11 @@ def create_ui():
                     value=False,
                     info="Lower Step 2 VAE peak VRAM by processing spatial tiles. Slower, but useful for larger key frames."
                 )
+                video_tiled_vae_checkbox = gr.Checkbox(
+                    label="Tiled VAE (Video)",
+                    value=False,
+                    info="Lower Step 3 video VAE peak VRAM by processing spatial tiles. Slower, but useful for lower VRAM GPUs."
+                )
                 use_random_seed_checkbox = gr.Checkbox(label="Use Random Seed", value=True)
             with gr.Row():
                 with gr.Column():
@@ -695,11 +700,6 @@ def create_ui():
                     i2v_steps = gr.Slider(minimum=1, maximum=60, step=1, elem_id="i2v_steps",
                                           label="Sampling steps", value=50)
                     i2v_fps = gr.Slider(minimum=1, maximum=30, step=1, elem_id="i2v_motion", label="FPS", value=4)
-                    video_tiled_vae_checkbox = gr.Checkbox(
-                        label="Tiled VAE (Video)",
-                        value=False,
-                        info="Lower Step 3 video VAE peak VRAM by processing spatial tiles. Slower, but useful for lower VRAM GPUs."
-                    )
                 with gr.Column():
                     open_results_btn = gr.Button("Open Results Folder")
                     i2v_end_btn = gr.Button("Generate Video", interactive=False)
