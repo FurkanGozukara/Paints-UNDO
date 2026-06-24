@@ -26,7 +26,7 @@ def sdp(q, k, v, heads):
         k,
         v,
         env_name="PAINTS_UNDO_UNET_XFORMERS_OP",
-        default_op="triton_splitk",
+        default_op="triton_splitk,auto,sdpa",
         label="video-unet",
     )
 
