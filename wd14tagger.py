@@ -15,6 +15,56 @@ global_model = None
 global_csv = None
 
 
+def create_session_options():
+    sess_options = ort.SessionOptions()
+    sess_options.intra_op_num_threads = min(4, os.cpu_count() or 1)
+    sess_options.inter_op_num_threads = 1
+    sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    sess_options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+    sess_options.add_session_config_entry("session.inter_op.allow_spinning", "0")
+    return sess_options
+
+
+def preload_onnxruntime_cuda_libraries():
+    if not hasattr(ort, "preload_dlls"):
+        return
+    try:
+        ort.preload_dlls(directory="")
+    except Exception as e:
+        print(f"WD14 Tagger CUDA library preload skipped: {e}")
+
+
+def create_inference_session(model_onnx_filename):
+    sess_options = create_session_options()
+    available_providers = ort.get_available_providers()
+
+    if "CUDAExecutionProvider" in available_providers:
+        preload_onnxruntime_cuda_libraries()
+        try:
+            model = InferenceSession(
+                model_onnx_filename,
+                sess_options=sess_options,
+                providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+            )
+            active_providers = model.get_providers()
+            if "CUDAExecutionProvider" in active_providers:
+                print("WD14 Tagger using GPU (CUDA)")
+            else:
+                print(f"WD14 Tagger using CPU (CUDA provider failed, active providers: {active_providers})")
+            return model
+        except Exception as e:
+            print(f"WD14 Tagger CUDA session failed, falling back to CPU: {e}")
+
+    model = InferenceSession(
+        model_onnx_filename,
+        sess_options=sess_options,
+        providers=["CPUExecutionProvider"],
+    )
+    print("WD14 Tagger using CPU (CUDA not available)")
+    return model
+
+
 def download_model(url, local_path):
     if os.path.exists(local_path):
         return local_path
@@ -43,14 +93,7 @@ def default_interrogator(image, threshold=0.35, character_threshold=0.85, exclud
     if global_model is not None:
         model = global_model
     else:
-        # Try to use CUDA if available, fall back to CPU
-        available_providers = ort.get_available_providers()
-        if 'CUDAExecutionProvider' in available_providers:
-            model = InferenceSession(model_onnx_filename, providers=['CUDAExecutionProvider'])
-            print('WD14 Tagger using GPU (CUDA)')
-        else:
-            model = InferenceSession(model_onnx_filename, providers=['CPUExecutionProvider'])
-            print('WD14 Tagger using CPU (CUDA not available)')
+        model = create_inference_session(model_onnx_filename)
         global_model = model
 
     input = model.get_inputs()[0]

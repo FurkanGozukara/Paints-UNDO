@@ -147,14 +147,22 @@ k_sampler = KDiffusionSampler(
 # Warmup function to compile CUDA kernels
 def warmup_models():
     print("[DEBUG] Warming up models (compiling CUDA kernels)...")
+    if not torch.cuda.is_available():
+        print("[DEBUG] Warmup skipped - CUDA not available")
+        return
+
     try:
         with torch.inference_mode():
+            memory_management.load_models_to_gpu(unet)
+            device = unet.device
+            dtype = unet.dtype
+
             # Warmup UNet
-            dummy_latent = torch.randn(1, 8, 64, 64, device='cuda', dtype=torch.float16)
-            dummy_t = torch.tensor([999], device='cuda')
-            dummy_encoder = torch.randn(1, 77, 768, device='cuda', dtype=torch.float16)
-            dummy_concat = torch.randn(1, 4, 64, 64, device='cuda', dtype=torch.float16)
-            dummy_coded = torch.tensor([500], device='cuda', dtype=torch.long)
+            dummy_latent = torch.randn(1, 8, 64, 64, device=device, dtype=dtype)
+            dummy_t = torch.tensor([999], device=device)
+            dummy_encoder = torch.randn(1, 77, 768, device=device, dtype=dtype)
+            dummy_concat = torch.randn(1, 4, 64, 64, device=device, dtype=dtype)
+            dummy_coded = torch.tensor([500], device=device, dtype=torch.long)
             
             _ = unet(
                 dummy_latent,
@@ -163,7 +171,8 @@ def warmup_models():
                 cross_attention_kwargs={'concat_conds': dummy_concat, 'coded_conds': dummy_coded},
                 return_dict=False
             )
-            torch.cuda.synchronize()
+            if device.type == 'cuda':
+                torch.cuda.synchronize(device)
             print("[DEBUG] Warmup complete - CUDA kernels compiled")
     except Exception as e:
         print(f"[WARNING] Warmup failed (this is OK): {e}")
