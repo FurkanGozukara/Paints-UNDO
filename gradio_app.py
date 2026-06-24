@@ -157,11 +157,13 @@ def warmup_models():
             device = unet.device
             dtype = unet.dtype
 
-            # Warmup UNet
-            dummy_latent = torch.randn(1, 8, 64, 64, device=device, dtype=dtype)
+            # The concat hook appends the 4-channel image latent to the sample,
+            # so the dummy sample must match the real 4-channel latent input.
+            latent_channels = vae.config.latent_channels
+            dummy_latent = torch.randn(1, latent_channels, 64, 64, device=device, dtype=dtype)
             dummy_t = torch.tensor([999], device=device)
             dummy_encoder = torch.randn(1, 77, 768, device=device, dtype=dtype)
-            dummy_concat = torch.randn(1, 4, 64, 64, device=device, dtype=dtype)
+            dummy_concat = torch.randn(1, latent_channels, 64, 64, device=device, dtype=dtype)
             dummy_coded = torch.tensor([500], device=device, dtype=torch.long)
             
             _ = unet(
