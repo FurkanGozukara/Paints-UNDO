@@ -170,7 +170,8 @@ def save_preset(preset_name, settings):
     return gr.update(choices=get_preset_list(), value=preset_name)
 
 def save_preset_wrapper(preset_name, input_undo_steps, seed, image_width, image_height, steps, cfg, n_prompt,
-                        auto_set_dimensions, lowvram, i2v_input_text, i2v_seed, i2v_cfg_scale, i2v_steps, i2v_fps, use_random_seed):
+                        auto_set_dimensions, lowvram, tiled_vae, i2v_input_text, i2v_seed, i2v_cfg_scale, i2v_steps,
+                        i2v_fps, use_random_seed):
     settings = {
         'input_undo_steps': input_undo_steps,
         'seed': seed,
@@ -181,6 +182,7 @@ def save_preset_wrapper(preset_name, input_undo_steps, seed, image_width, image_
         'n_prompt': n_prompt,
         'auto_set_dimensions': auto_set_dimensions,
         'lowvram': lowvram,
+        'tiled_vae': tiled_vae,
         'i2v_input_text': i2v_input_text,
         'i2v_seed': i2v_seed,
         'i2v_cfg_scale': i2v_cfg_scale,
@@ -193,17 +195,24 @@ def save_preset_wrapper(preset_name, input_undo_steps, seed, image_width, image_
 def load_preset(preset_name):
     presets_dir = os.path.join(os.path.dirname(__file__), 'presets')
     preset_path = os.path.join(presets_dir, f"{preset_name}.json")
+    defaults = [
+        [400, 600, 800, 900, 950, 999], 12345, 512, 640, 50, 3.0,
+        'lowres, bad anatomy, bad hands, cropped, worst quality',
+        True, False, False,
+        '1girl, masterpiece, best quality', 123, 7.5, 50, 4, True
+    ]
+    keys = [
+        'input_undo_steps', 'seed', 'image_width', 'image_height', 'steps', 'cfg', 'n_prompt',
+        'auto_set_dimensions', 'lowvram', 'tiled_vae',
+        'i2v_input_text', 'i2v_seed', 'i2v_cfg_scale', 'i2v_steps', 'i2v_fps', 'use_random_seed'
+    ]
     try:
         with open(preset_path, 'r') as f:
             settings = json.load(f)
         save_last_preset(preset_name)
-        return [settings.get(key, None) for key in [
-            'input_undo_steps', 'seed', 'image_width', 'image_height', 'steps', 'cfg', 'n_prompt',
-            'auto_set_dimensions', 'lowvram',
-            'i2v_input_text', 'i2v_seed', 'i2v_cfg_scale', 'i2v_steps', 'i2v_fps', 'use_random_seed'
-        ]]
+        return [settings.get(key, default) for key, default in zip(keys, defaults)]
     except:
-        return [None] * 16
+        return defaults
 
 def get_preset_list():
     presets_dir = os.path.join(os.path.dirname(__file__), 'presets')
@@ -247,6 +256,16 @@ def numpy2pytorch(imgs):
     h = h.movedim(-1, 1)
     return h
 
+def set_single_frame_vae_tiling(enabled):
+    if enabled:
+        if hasattr(vae, 'enable_tiling'):
+            vae.enable_tiling()
+            print("[VAE] Single-frame tiled VAE enabled")
+        else:
+            print("[VAE] Single-frame tiled VAE requested, but this Diffusers VAE has no tiling support")
+    elif hasattr(vae, 'disable_tiling'):
+        vae.disable_tiling()
+
 def resize_without_crop(image, target_width, target_height):
     pil_image = Image.fromarray(image)
     resized_image = pil_image.resize((target_width, target_height), Image.LANCZOS)
@@ -264,7 +283,7 @@ def interrogator_process(x):
 
 @torch.inference_mode()
 def process(input_fg_path, prompt, input_undo_steps, image_width, image_height, seed, steps, n_prompt, cfg,
-            use_random_seed, lowvram, progress=gr.Progress()):
+            use_random_seed, lowvram, tiled_vae, progress=gr.Progress()):
     import time
     process_start = time.time()
     
@@ -274,12 +293,14 @@ def process(input_fg_path, prompt, input_undo_steps, image_width, image_height, 
     # lowvram=True means Low VRAM Mode is enabled, so high_vram should be False
     print(f"[TRACE] Setting memory management mode...")
     memory_management.set_high_vram_mode(not lowvram)
+    set_single_frame_vae_tiling(tiled_vae)
     
     print(f"\n{'='*60}")
     print(f"[DEBUG] Starting key frame generation")
     print(f"[DEBUG] Settings: {image_width}x{image_height}, {steps} steps, CFG={cfg}")
     print(f"[DEBUG] Undo steps: {input_undo_steps} (batch size: {len(input_undo_steps)})")
     print(f"[DEBUG] Low VRAM Mode: {'ON' if lowvram else 'OFF'}")
+    print(f"[DEBUG] Tiled VAE: {'ON' if tiled_vae else 'OFF'}")
     print(f"{'='*60}\n")
     
     if use_random_seed:
@@ -369,13 +390,15 @@ def process(input_fg_path, prompt, input_undo_steps, image_width, image_height, 
     return result, frames_folder, seed
 
 @torch.inference_mode()
-def process_video_inner(image_1, image_2, prompt, seed=123, steps=25, cfg_scale=7.5, fs=3, progress_tqdm=None):
+def process_video_inner(image_1, image_2, prompt, seed=123, steps=25, cfg_scale=7.5, fs=3, tiled_vae=False,
+                        progress_tqdm=None):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
     frames = 16
+    offload_intermediates = not memory_management.high_vram
 
     target_height, target_width = find_best_bucket(
         image_1.shape[0], image_1.shape[1],
@@ -390,6 +413,9 @@ def process_video_inner(image_1, image_2, prompt, seed=123, steps=25, cfg_scale=
     memory_management.load_models_to_gpu(video_pipe.text_encoder)
     positive_text_cond = video_pipe.encode_cropped_prompt_77tokens(prompt)
     negative_text_cond = video_pipe.encode_cropped_prompt_77tokens("")
+    if offload_intermediates:
+        positive_text_cond = positive_text_cond.cpu()
+        negative_text_cond = negative_text_cond.cpu()
 
     memory_management.load_models_to_gpu([video_pipe.image_projection, video_pipe.image_encoder])
     input_frames = input_frames.to(device=video_pipe.image_encoder.device, dtype=video_pipe.image_encoder.dtype)
@@ -397,13 +423,28 @@ def process_video_inner(image_1, image_2, prompt, seed=123, steps=25, cfg_scale=
     positive_image_cond = video_pipe.image_projection(positive_image_cond)
     negative_image_cond = video_pipe.encode_clip_vision(torch.zeros_like(input_frames))
     negative_image_cond = video_pipe.image_projection(negative_image_cond)
+    if offload_intermediates:
+        positive_image_cond = positive_image_cond.cpu()
+        negative_image_cond = negative_image_cond.cpu()
+        input_frames = input_frames.cpu()
+        torch.cuda.empty_cache()
 
     memory_management.load_models_to_gpu([video_pipe.vae])
     input_frames = input_frames.to(device=video_pipe.vae.device, dtype=video_pipe.vae.dtype)
-    input_frame_latents, vae_hidden_states = video_pipe.encode_latents(input_frames, return_hidden_states=True)
+    input_frame_latents, vae_hidden_states = video_pipe.encode_latents(
+        input_frames,
+        return_hidden_states=True,
+        tiled_vae=tiled_vae,
+    )
     first_frame = input_frame_latents[:, :, 0]
     last_frame = input_frame_latents[:, :, 1]
     concat_cond = torch.stack([first_frame] + [torch.zeros_like(first_frame)] * (frames - 2) + [last_frame], dim=2)
+    if offload_intermediates:
+        concat_cond = concat_cond.cpu()
+        vae_hidden_states = [h.cpu() for h in vae_hidden_states]
+    del input_frames, input_frame_latents, first_frame, last_frame
+    if offload_intermediates:
+        torch.cuda.empty_cache()
 
     memory_management.load_models_to_gpu([video_pipe.unet])
     latents = video_pipe(
@@ -420,7 +461,10 @@ def process_video_inner(image_1, image_2, prompt, seed=123, steps=25, cfg_scale=
     )
 
     memory_management.load_models_to_gpu([video_pipe.vae])
-    video = video_pipe.decode_latents(latents, vae_hidden_states)
+    video = video_pipe.decode_latents(latents, vae_hidden_states, tiled_vae=tiled_vae)
+    video = video.cpu()
+    del latents, vae_hidden_states, concat_cond
+    torch.cuda.empty_cache()
     return video, image_1, image_2
 
 def auto_set_dimensions(image, lowvram):
@@ -445,9 +489,11 @@ def auto_set_dimensions(image, lowvram):
     return gr.update(value=new_width), gr.update(value=new_height)
 
 @torch.inference_mode()
-def process_video(keyframes, prompt, steps, cfg, fps, seed, input_fg_path, use_random_seed, lowvram, progress=gr.Progress()):
+def process_video(keyframes, prompt, steps, cfg, fps, seed, input_fg_path, use_random_seed, lowvram, tiled_vae,
+                  progress=gr.Progress()):
     # Set memory management mode for video generation
     memory_management.set_high_vram_mode(not lowvram)
+    print(f"[DEBUG] Tiled VAE: {'ON' if tiled_vae else 'OFF'}")
     
     result_frames = []
     cropped_images = []
@@ -458,10 +504,10 @@ def process_video(keyframes, prompt, steps, cfg, fps, seed, input_fg_path, use_r
         if use_random_seed:
             seed = random.randint(0, 1000000)
         frames, im1, im2 = process_video_inner(
-            im1, im2, prompt, seed=seed + i, steps=steps, cfg_scale=cfg, fs=3,
+            im1, im2, prompt, seed=seed + i, steps=steps, cfg_scale=cfg, fs=3, tiled_vae=tiled_vae,
             progress_tqdm=functools.partial(progress.tqdm, desc=f'Generating Videos ({i + 1}/{len(keyframes) - 1})')
         )
-        result_frames.append(frames[:, :, :-1, :, :])
+        result_frames.append(frames[:, :, :-1, :, :].cpu())
         cropped_images.append([im1, im2])
 
     video = torch.cat(result_frames, dim=2)
@@ -493,7 +539,7 @@ def create_ui():
     block = gr.Blocks()
     preset_choices = get_preset_list()
     with block:
-        gr.Markdown('# Paints-Undo Upgraded - V7 - Source : https://www.patreon.com/posts/121228327')
+        gr.Markdown('# Paints-Undo Upgraded - V9 - Source : https://www.patreon.com/posts/121228327')
 
         with gr.Accordion(label='Step 1: Upload Image and Generate Prompt', open=True):
             with gr.Row():
@@ -523,6 +569,11 @@ def create_ui():
                     label="Low VRAM Mode", 
                     value=False,  # Default to OFF for high-end GPUs (RTX 3090/4090/5090)
                     info="Enable for GPUs with <12GB VRAM. Disable for RTX 3090/4090/5090 for max speed."
+                )
+                tiled_vae_checkbox = gr.Checkbox(
+                    label="Tiled VAE",
+                    value=False,
+                    info="Lower VAE peak VRAM by processing spatial tiles. Slower, but useful for larger outputs."
                 )
                 use_random_seed_checkbox = gr.Checkbox(label="Use Random Seed", value=True)
             with gr.Row():
@@ -597,7 +648,10 @@ def create_ui():
 
         key_gen_button.click(
             fn=process,
-            inputs=[input_fg, prompt, input_undo_steps, image_width, image_height, seed, steps, n_prompt, cfg, use_random_seed_checkbox, lowvram_checkbox],
+            inputs=[
+                input_fg, prompt, input_undo_steps, image_width, image_height, seed, steps, n_prompt, cfg,
+                use_random_seed_checkbox, lowvram_checkbox, tiled_vae_checkbox
+            ],
             outputs=[result_gallery, gr.State(), seed]
         ).then(
             lambda result, frames_folder, used_seed: [
@@ -612,7 +666,10 @@ def create_ui():
         )
 
         i2v_end_btn.click(
-            inputs=[result_gallery, i2v_input_text, i2v_steps, i2v_cfg_scale, i2v_fps, i2v_seed, input_fg, use_random_seed_checkbox, lowvram_checkbox],
+            inputs=[
+                result_gallery, i2v_input_text, i2v_steps, i2v_cfg_scale, i2v_fps, i2v_seed, input_fg,
+                use_random_seed_checkbox, lowvram_checkbox, tiled_vae_checkbox
+            ],
             outputs=[i2v_output_video, i2v_output_images],
             fn=process_video
         )
@@ -630,7 +687,7 @@ def create_ui():
             inputs=[
                 preset_name, 
                 input_undo_steps, seed, image_width, image_height, steps, cfg, n_prompt,
-                auto_set_dimensions_checkbox, lowvram_checkbox,
+                auto_set_dimensions_checkbox, lowvram_checkbox, tiled_vae_checkbox,
                 i2v_input_text, i2v_seed, i2v_cfg_scale, i2v_steps, i2v_fps, use_random_seed_checkbox
             ],
             outputs=[load_preset_dropdown]
@@ -641,7 +698,7 @@ def create_ui():
             inputs=[load_preset_dropdown],
             outputs=[
                 input_undo_steps, seed, image_width, image_height, steps, cfg, n_prompt,
-                auto_set_dimensions_checkbox, lowvram_checkbox,
+                auto_set_dimensions_checkbox, lowvram_checkbox, tiled_vae_checkbox,
                 i2v_input_text, i2v_seed, i2v_cfg_scale, i2v_steps, i2v_fps, use_random_seed_checkbox
             ]
         )
@@ -664,7 +721,7 @@ def create_ui():
                 outputs=[
                     load_preset_dropdown,  # Update the dropdown selection
                     input_undo_steps, seed, image_width, image_height, steps, cfg, n_prompt,
-                    auto_set_dimensions_checkbox, lowvram_checkbox,
+                    auto_set_dimensions_checkbox, lowvram_checkbox, tiled_vae_checkbox,
                     i2v_input_text, i2v_seed, i2v_cfg_scale, i2v_steps, i2v_fps, use_random_seed_checkbox
                 ]
             )
