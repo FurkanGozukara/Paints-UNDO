@@ -26,6 +26,44 @@ os.environ['HF_HOME'] = os.path.join(os.path.dirname(__file__), 'hf_download')
 result_dir = os.path.join('./', 'results')
 os.makedirs(result_dir, exist_ok=True)
 
+GALLERY_SCROLL_CSS = """
+#keyframe_gallery .grid-wrap,
+#video_frames_gallery .grid-wrap {
+    height: 512px !important;
+    max-height: 512px !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    scrollbar-gutter: stable;
+}
+
+#keyframe_gallery .grid-container,
+#video_frames_gallery .grid-container {
+    height: auto !important;
+    min-height: 512px;
+}
+
+#keyframe_gallery .grid-wrap::-webkit-scrollbar,
+#video_frames_gallery .grid-wrap::-webkit-scrollbar {
+    width: 12px;
+}
+
+#keyframe_gallery .grid-wrap::-webkit-scrollbar-track,
+#video_frames_gallery .grid-wrap::-webkit-scrollbar-track {
+    background: var(--background-fill-secondary);
+}
+
+#keyframe_gallery .grid-wrap::-webkit-scrollbar-thumb,
+#video_frames_gallery .grid-wrap::-webkit-scrollbar-thumb {
+    background: var(--border-color-primary);
+    border-radius: 8px;
+}
+
+#keyframe_gallery .grid-wrap::-webkit-scrollbar-thumb:hover,
+#video_frames_gallery .grid-wrap::-webkit-scrollbar-thumb:hover {
+    background: var(--body-text-color-subdued);
+}
+"""
+
 # Enable TF32 for better performance on Ampere/Ada/Hopper GPUs (RTX 30xx/40xx/50xx)
 if torch.cuda.is_available():
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -160,6 +198,13 @@ def save_last_preset(preset_name):
     with open(last_preset_file, 'w') as f:
         f.write(preset_name)
 
+def sort_operation_steps(input_undo_steps):
+    if input_undo_steps is None:
+        return []
+    if isinstance(input_undo_steps, (int, float, str)):
+        input_undo_steps = [input_undo_steps]
+    return sorted([int(step) for step in input_undo_steps])
+
 def save_preset(preset_name, settings):
     presets_dir = os.path.join(os.path.dirname(__file__), 'presets')
     os.makedirs(presets_dir, exist_ok=True)
@@ -173,7 +218,7 @@ def save_preset_wrapper(preset_name, input_undo_steps, seed, image_width, image_
                         auto_set_dimensions, lowvram, tiled_vae, i2v_input_text, i2v_seed, i2v_cfg_scale, i2v_steps,
                         i2v_fps, use_random_seed):
     settings = {
-        'input_undo_steps': input_undo_steps,
+        'input_undo_steps': sort_operation_steps(input_undo_steps),
         'seed': seed,
         'image_width': image_width,
         'image_height': image_height,
@@ -210,6 +255,7 @@ def load_preset(preset_name):
         with open(preset_path, 'r') as f:
             settings = json.load(f)
         save_last_preset(preset_name)
+        settings['input_undo_steps'] = sort_operation_steps(settings.get('input_undo_steps', defaults[0]))
         return [settings.get(key, default) for key, default in zip(keys, defaults)]
     except:
         return defaults
@@ -286,6 +332,7 @@ def process(input_fg_path, prompt, input_undo_steps, image_width, image_height, 
             use_random_seed, lowvram, tiled_vae, progress=gr.Progress()):
     import time
     process_start = time.time()
+    input_undo_steps = sort_operation_steps(input_undo_steps)
     
     print(f"[TRACE] Process function started")
     
@@ -536,7 +583,7 @@ def generate_unique_filename(base_filename):
 
 def create_ui():
     # Disable queue - it can interfere with GPU operations
-    block = gr.Blocks()
+    block = gr.Blocks(css=GALLERY_SCROLL_CSS)
     preset_choices = get_preset_list()
     with block:
         gr.Markdown('# Paints-Undo Upgraded - V9 - Source : https://www.patreon.com/posts/121228327')
@@ -590,7 +637,13 @@ def create_ui():
 
                 with gr.Column():
                     key_gen_button = gr.Button(value="Generate Key Frames", interactive=False)
-                    result_gallery = gr.Gallery(height=512, object_fit='contain', label='Outputs', columns=4)
+                    result_gallery = gr.Gallery(
+                        height=512,
+                        object_fit='contain',
+                        label='Outputs',
+                        columns=4,
+                        elem_id="keyframe_gallery",
+                    )
 
         with gr.Accordion(label='Step 3: Generate All Videos', open=True):
             with gr.Row():
@@ -612,7 +665,13 @@ def create_ui():
                         height=512,
                     )
             with gr.Row():
-                i2v_output_images = gr.Gallery(height=512, label="Output Frames", object_fit="contain", columns=8)
+                i2v_output_images = gr.Gallery(
+                    height=512,
+                    label="Output Frames",
+                    object_fit="contain",
+                    columns=8,
+                    elem_id="video_frames_gallery",
+                )
 
         def update_on_image_change(image_path, auto_set, lowvram):
             outputs = [
@@ -635,6 +694,13 @@ def create_ui():
             fn=update_on_image_change,
             inputs=[input_fg, auto_set_dimensions_checkbox, lowvram_checkbox],
             outputs=[prompt, prompt_gen_button, key_gen_button, i2v_end_btn, image_width, image_height]
+        )
+
+        input_undo_steps.input(
+            fn=sort_operation_steps,
+            inputs=[input_undo_steps],
+            outputs=[input_undo_steps],
+            show_progress='hidden'
         )
 
         prompt_gen_button.click(
